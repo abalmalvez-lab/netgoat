@@ -5,27 +5,67 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"netgoat.xyz/agent/internal/config"
+	"netgoat.xyz/agent/internal/policy"
 )
 
 type ConfigSnapshot struct {
-	Version          int64                  `json:"version"`
-	Timestamp        time.Time              `json:"timestamp"`
-	Routes           map[string]RouteData   `json:"routes"`
-	WAFRules         map[string]WAFRuleData `json:"waf_rules"`
-	Users            []UserData             `json:"users"`
-	UserDomains      []UserDomainData       `json:"user_domains"`
-	ZeroTrustEnabled bool                   `json:"zero_trust_enabled"`
+	Version            int64                  `json:"version"`
+	Timestamp          time.Time              `json:"timestamp"`
+	Routes             map[string]RouteData   `json:"routes"`
+	RoutesConfigured   bool                   `json:"routes_configured,omitempty"`
+	WAFRules           map[string]WAFRuleData `json:"waf_rules"`
+	WAFRulesConfigured bool                   `json:"waf_rules_configured,omitempty"`
+	Users              []UserData             `json:"users"`
+	// UsersConfigured means the control plane explicitly supplied a complete
+	// users collection. A missing field (including snapshots from older control
+	// planes) remains non-authoritative so local users are never removed merely
+	// because a source does not publish users.
+	UsersConfigured bool             `json:"users_configured,omitempty"`
+	UserDomains     []UserDomainData `json:"user_domains"`
+	// UserDomainsConfigured has the same full-replacement semantics as
+	// UsersConfigured, but for user-owned proxy records.
+	UserDomainsConfigured bool `json:"user_domains_configured,omitempty"`
+	ZeroTrustEnabled      bool `json:"zero_trust_enabled"`
+	// ZeroTrustConfigured distinguishes an explicit false from a field omitted
+	// by older control planes or an empty local snapshot.
+	ZeroTrustConfigured bool            `json:"zero_trust_configured,omitempty"`
+	AgentConfig         AgentConfigData `json:"agent_config"`
+	// PluginsConfigured distinguishes an explicit, possibly empty catalog
+	// selection from a snapshot emitted by an older control plane. Plugin
+	// selections are retained for the next restart and are never hot-loaded.
+	PluginsConfigured bool                `json:"plugins_configured,omitempty"`
+	Plugins           config.PluginConfig `json:"plugins"`
+}
+
+type RouteTarget struct {
+	URL         string `json:"url"`
+	HealthCheck string `json:"health_check,omitempty"` // "http" or "tcp"
 }
 
 type RouteData struct {
-	Type           string `json:"type"`
-	Target         string `json:"target"`
-	CertificatePEM string `json:"certificate_pem,omitempty"`
-	PrivateKeyPEM  string `json:"private_key_pem,omitempty"`
+	Type           string             `json:"type"`
+	Target         string             `json:"target"` // legacy single target; use Targets when possible
+	Targets        []RouteTarget      `json:"targets,omitempty"`
+	CertificatePEM string             `json:"certificate_pem,omitempty"`
+	PrivateKeyPEM  string             `json:"private_key_pem,omitempty"`
+	Policy         policy.RoutePolicy `json:"policy,omitempty"`
+}
+
+// AllTargets returns configured upstreams, falling back to the legacy Target field.
+func (r RouteData) AllTargets() []RouteTarget {
+	if len(r.Targets) > 0 {
+		return r.Targets
+	}
+	if r.Target != "" {
+		return []RouteTarget{{URL: r.Target, HealthCheck: "http"}}
+	}
+	return nil
 }
 
 type WAFRuleData struct {
@@ -50,6 +90,104 @@ type UserDomainData struct {
 	Domain    string `json:"domain"`
 	TargetURL string `json:"target_url"`
 	Active    bool   `json:"active"`
+}
+
+type AgentKeyMode string
+
+const (
+	AgentKeyIP     AgentKeyMode = "ip"
+	AgentKeyHost   AgentKeyMode = "host"
+	AgentKeyRoute  AgentKeyMode = "route"
+	AgentKeyGlobal AgentKeyMode = "global"
+)
+
+type AgentCacheConfig struct {
+	Enabled      bool `json:"enabled"`
+	TTLSeconds   int  `json:"ttl_seconds"`
+	MaxEntries   int  `json:"max_entries"`
+	MaxBodyBytes int  `json:"max_body_bytes"`
+}
+
+type AgentRateLimitConfig struct {
+	Enabled           bool         `json:"enabled"`
+	RequestsPerMinute int          `json:"requests_per_minute"`
+	Burst             int          `json:"burst"`
+	Key               AgentKeyMode `json:"key"`
+}
+
+type AgentRequestQueueConfig struct {
+	Enabled        bool `json:"enabled"`
+	MaxConcurrent  int  `json:"max_concurrent"`
+	MaxQueued      int  `json:"max_queued"`
+	TimeoutSeconds int  `json:"timeout_seconds"`
+}
+
+type AgentBandwidthConfig struct {
+	Enabled        bool         `json:"enabled"`
+	BytesPerSecond int          `json:"bytes_per_second"`
+	BurstBytes     int          `json:"burst_bytes"`
+	Key            AgentKeyMode `json:"key"`
+}
+
+type AgentMetricsConfig struct {
+	Enabled bool   `json:"enabled"`
+	Path    string `json:"path"`
+}
+
+type AgentModelConfig struct {
+	Enabled       bool    `json:"enabled"`
+	Threshold     float64 `json:"threshold"`
+	ModelPath     string  `json:"model_path"`
+	ScalerPath    string  `json:"scaler_path"`
+	PythonScript  string  `json:"python_script"`
+	FeatureHeader string  `json:"feature_header"`
+}
+
+// AgentDynamicRuleData is one ordered, administrator-managed JavaScript or
+// TypeScript rule. The agent compiles it into an isolated runtime before it is
+// published to requests.
+type AgentDynamicRuleData struct {
+	Name     string `json:"name"`
+	Language string `json:"language"`
+	Source   string `json:"source"`
+}
+
+type AgentDynamicRulesConfig struct {
+	Enabled                  bool                   `json:"enabled"`
+	Rules                    []AgentDynamicRuleData `json:"rules"`
+	MaxRules                 int                    `json:"max_rules"`
+	MaxSourceBytes           int                    `json:"max_source_bytes"`
+	MaxCompiledBytes         int                    `json:"max_compiled_bytes"`
+	MaxInputBytes            int                    `json:"max_input_bytes"`
+	MaxResultBytes           int                    `json:"max_result_bytes"`
+	MaxExecutionMilliseconds int                    `json:"max_execution_milliseconds"`
+}
+
+type AgentConfigData struct {
+	Cache        AgentCacheConfig        `json:"cache"`
+	RateLimit    AgentRateLimitConfig    `json:"rate_limit"`
+	RequestQueue AgentRequestQueueConfig `json:"request_queue"`
+	Bandwidth    AgentBandwidthConfig    `json:"bandwidth"`
+	Metrics      AgentMetricsConfig      `json:"metrics"`
+	KodaWaf      AgentModelConfig        `json:"koda_waf"`
+	Koda2        AgentModelConfig        `json:"koda_2"`
+	DynamicRules AgentDynamicRulesConfig `json:"dynamic_rules"`
+	present      bool
+}
+
+func (c AgentConfigData) IsZero() bool {
+	return !c.present && reflect.DeepEqual(c, AgentConfigData{})
+}
+
+func (c *AgentConfigData) UnmarshalJSON(data []byte) error {
+	type agentConfigData AgentConfigData
+	var decoded agentConfigData
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*c = AgentConfigData(decoded)
+	c.present = true
+	return nil
 }
 
 type Message struct {
@@ -176,7 +314,16 @@ func (m *Manager) Close() {
 func (s *ConfigSnapshot) copy() *ConfigSnapshot {
 	routes := make(map[string]RouteData, len(s.Routes))
 	for k, v := range s.Routes {
-		routes[k] = v
+		targets := make([]RouteTarget, len(v.Targets))
+		copy(targets, v.Targets)
+		routes[k] = RouteData{
+			Type:           v.Type,
+			Target:         v.Target,
+			Targets:        targets,
+			CertificatePEM: v.CertificatePEM,
+			PrivateKeyPEM:  v.PrivateKeyPEM,
+			Policy:         v.Policy.Clone(),
+		}
 	}
 	rules := make(map[string]WAFRuleData, len(s.WAFRules))
 	for k, v := range s.WAFRules {
@@ -187,14 +334,25 @@ func (s *ConfigSnapshot) copy() *ConfigSnapshot {
 	userDomains := make([]UserDomainData, len(s.UserDomains))
 	copy(userDomains, s.UserDomains)
 
+	agentConfig := s.AgentConfig
+	agentConfig.DynamicRules.Rules = append([]AgentDynamicRuleData(nil), s.AgentConfig.DynamicRules.Rules...)
+
 	return &ConfigSnapshot{
-		Version:          s.Version,
-		Timestamp:        s.Timestamp,
-		Routes:           routes,
-		WAFRules:         rules,
-		Users:            users,
-		UserDomains:      userDomains,
-		ZeroTrustEnabled: s.ZeroTrustEnabled,
+		Version:               s.Version,
+		Timestamp:             s.Timestamp,
+		Routes:                routes,
+		RoutesConfigured:      s.RoutesConfigured,
+		WAFRules:              rules,
+		WAFRulesConfigured:    s.WAFRulesConfigured,
+		Users:                 users,
+		UsersConfigured:       s.UsersConfigured,
+		UserDomains:           userDomains,
+		UserDomainsConfigured: s.UserDomainsConfigured,
+		ZeroTrustEnabled:      s.ZeroTrustEnabled,
+		ZeroTrustConfigured:   s.ZeroTrustConfigured,
+		AgentConfig:           agentConfig,
+		PluginsConfigured:     s.PluginsConfigured,
+		Plugins:               s.Plugins.Clone(),
 	}
 }
 
@@ -211,7 +369,7 @@ func (m *Manager) saveToDisk() error {
 
 	// Write to temp file first, then rename for atomicity
 	tmpFile := m.recoveryFile + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
 		return err
 	}
 

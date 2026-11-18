@@ -1,105 +1,263 @@
-<img width="5658" height="1600" alt="image" src="https://github.com/user-attachments/assets/d30fb971-4b39-490c-ac08-0d688e8f9ada" />
+<img width="5658" height="1600" alt="NetGoat" src="https://github.com/user-attachments/assets/d30fb971-4b39-490c-ac08-0d688e8f9ada" />
 
-# NetGoat - Self-Hostable Cloudflare Alternative (Reverse Proxy Engine)
+[![Deploy to Railyard](https://app.railyard.run/deploy/badge)](https://app.railyard.run/deploy?repo=https://github.com/netgoat-xyz/netgoat)
 
-> [!IMPORTANT]
-> NetGoat is currently in Active Alpha. We are refining the core proxy engine and self-hosting scripts for a stable public release. Follow our progress on [Discord.](https://discord.com/invite/3aJ7MdJsZV)
+# NetGoat agent
 
-## 💖 Special Thanks
+NetGoat is a self-hosted reverse proxy and traffic-policy agent written in Go. It can run from a local YAML configuration, consume snapshots from the companion control plane, and continue serving the last known-good configuration during an outage.
 
-A huge thank you to **Cozy Critters Society** and **Snow** for being our first donors! Their support means the world to us. Check out their nonprofit here: [Cozy Critters Society](https://opencollective.com/cozy-critters-society).
+> [!WARNING]
+> NetGoat is active alpha software (`v0.1.0-alpha.1`; git tags going
+> forward are `v*`, see [docs/release.md](docs/release.md)). The shipped
+> configuration contains no routes. Review every upstream, use strong
+> bootstrap credentials, and place administrative services behind
+> authenticated TLS before exposing a deployment to the internet.
 
-> _“The team at Cozy Critters Society is happy to support the development of NetGoat in hopes that we can help them succeed in making their self-hostable Cloudflare alternative.”_
+## Feature status
 
----
+This table is the public roadmap surface. **Available** is what this agent
+ships today. **Planned** is designed work with open specs — not live
+behavior, not a package, and not an identity product.
 
-**NetGoat** is a **blazing-fast, self-hostable reverse proxy and traffic manager** designed for developers, homelabbers, and teams who want **Cloudflare-like features** without the cost.
+The shipped `config.yml` has `routes: {}`. A fresh default deployment
+returns `404` for every Host instead of proxying to a local service.
 
-Key Features:
+### Available
 
-- **Zero Trust Networking** – secure your services without hassle.
-- **DDoS Protection** – keep your traffic safe from attacks.
-- **SSL Termination** – handle certificates automatically.
-- **Rate Limiting** – control traffic and prevent abuse.
-- **WebSocket Support** – real-time apps? No problem.
+| Capability | Status | Notes |
+| --- | --- | --- |
+| Domain and path routing | Available | Exact, wildcard, regex, and longest-prefix path routes; local routes can be overridden by streamed routes. |
+| Load balancing and failover | Available | Round-robin pools, bounded concurrent health checks, and safe-method retry/failover. |
+| WAF rules | Available | Precompiled expression rules with priorities, `BLOCK`/`ALLOW` actions, and request host/method/path/query/header/`stack_class` context. |
+| Traffic controls | Available | Global rate limiting, request queueing, bandwidth throttling, honeypot handling, and session-bound PoW with pinned Web Bot Auth skip. Challenge is JSON (not text/click/slider). Difficulty from load + `stack_class` mismatch (wired from terminate-only JA4/H2/ALPN), not User-Agent. Verify is bound to the terminated TLS session, not IP. |
+| Shared response cache | Available | Bounded LRU/TTL cache for explicitly public responses, with HTTP freshness and revalidation safeguards. |
+| Local authentication | Available | Cookie or Basic authentication, per-user zero-trust challenge flags, and explicit secure bootstrap users. |
+| TLS termination | Available | Static fallback, streamed per-domain/wildcard certificates, and atomic SNI selection. Termination is required for fingerprint v1 and for session-bound PoW. |
+| WebSocket proxying | Available | Upgrade connections are preserved by Go's reverse proxy. |
+| Metrics | Available | JSON and Prometheus endpoints for traffic, cache, block, latency, and proxy-error counters. |
+| AI request classifiers | Optional | Local GoatAI, Koda-WAF, and Koda-2 workers; model files and Python dependencies are required only when enabled. |
+| Control-plane recovery | Available | Polling with timeouts/backoff, atomic snapshot reconciliation, deduplication, and private on-disk recovery snapshots. |
+| Operational telemetry | Optional | Explicitly opt-in delivery to the companion telemetry server, with endpoint and ingestion-key configuration. |
+| Automatic certificate issuance/renewal | Available (opt-in) | Explicit ACME allow-list, HTTP-01 handler, encrypted persistent cache, and last-known-good certificate retention. |
+| JavaScript/TypeScript dynamic rules | Available (opt-in) | Isolated, bounded JS/TS request decisions with atomic last-known-good reload and fail-closed evaluation. |
+| Stack fingerprint v1 | Available | JA4 + Akamai-style H2 `SETTINGS` / `WINDOW_UPDATE` / `PRIORITY` / pseudo-header order + ALPN order, **only when this agent terminates TLS**. Opaque `stack_class` for bot clustering — not a user, hardware ID, or canvas hash. No JA4H. HTTP/3 / QUIC is a documented hole. Emit nothing for plaintext HTTP, TLS pass-through, or Cloudflare in front (`CF-Connecting-IP`). Spec: [#113](https://github.com/netgoat-xyz/netgoat/issues/113). |
+| Developer plugin catalog and middleware SDK | Available | Restart-only selections for exact compiled descriptors; v1 capability grants, lifecycle isolation, and no remote code/artifact loading. |
+| Cloudflare Access, DNS, and tunnel management | Available (opt-in) | Fail-closed Access JWT/JWKS verification plus bounded, dry-run-by-default startup reconciliation using an environment-only token. Cloudflare in front of this agent is **not** a JA4 source. |
+| Per-route cache/bandwidth policies | Available | Route policies inherit global defaults, isolate cache/bandwidth state, and support explicit per-route overrides. |
 
-Built with **modern tools** for maximum performance and developer experience:
+Recent hardening (already merged): public plaintext HTTP is refused at
+startup unless `allow_insecure_public_http: true` is set
+([#111](https://github.com/netgoat-xyz/netgoat/pull/111)). CI runs `go vet`
+and `go test -race` on pull requests and `main`
+([#110](https://github.com/netgoat-xyz/netgoat/pull/110),
+[#112](https://github.com/netgoat-xyz/netgoat/pull/112)).
 
-- **Bun** for super-fast runtime.
-- **Next.js** for robust front-end.
-- **Fastify** for high-performance backend.
-- **TailwindCSS** for sleek, responsive UI.
+The dashboard shown by the wider NetGoat project belongs to the control
+plane. This agent exposes metrics APIs but does not embed that dashboard.
 
-**NetGoat** gives you full control over your traffic, security, and performance—**all self-hosted**.
+### Next / roadmap
 
-### 🛠 The Stack
-- **Engine:** [Go](https://go.dev/) (High-concurrency proxying)
-- **Runtime:** [Bun](https://bun.sh/) (Fast scripting & automation)
-- **Control Plane:** [Next.js 15](https://nextjs.org/) & [Shadcn/ui](https://ui.shadcn.com/)
-- **Storage:** [SQLite](https://sqlite.org/) (Local-first) & [MongoDB](https://www.mongodb.com/) 
+Designed, not shipped. Specs live in the linked issues. Do not treat these
+rows as implementation claims.
 
+| Capability | Status | Notes |
+| --- | --- | --- |
+| VSA (Virtual System Administrator) | Planned | Out-of-band autonomous defense operator (not a hot-path classifier, not Kaseya VSA). Open: [#98](https://github.com/netgoat-xyz/netgoat/issues/98). |
 
-> Join our discord for support, annoucements, updates & bugs!! [Click Me To Join!](https://discord.com/invite/3aJ7MdJsZV) ![Discord](https://img.shields.io/discord/1350110102337749062)
+**Honesty**
 
-NetGoat is an advanced reverse proxy engine designed to act as an **additional layer** on top of Cloudflare — enabling **premium-grade features**, **zero-cost scaling**, and **maximum control** for power users and homelabbers.
+- Fingerprint is a client TLS/HTTP **stack class**. Chrome on a million
+  laptops will collide. Do not persist it as identity.
+- JA4 is live **only** when this agent terminates TLS. If Cloudflare or
+  any other terminator sits in front, this agent must not fingerprint
+  that ClientHello and call it the browser.
+- Turnstile / reCAPTCHA are **not** NetGoat features.
+- Session-bound PoW and pinned Web Bot Auth skip **are live** when this
+  agent terminates TLS. The pin list may be empty (skip lane empty until
+  operators seed https `pinned_directories`). Unsigned agents take the
+  PoW lane.
 
----
+**Gaps**
 
-## Screenshots
-| Dashboard | Domain Home |
-| :---: | :---: |
-| <img src="https://cdn.hackclub.com/019cf11c-0d2d-7358-9037-9f91d43454b4/Screenshot%202026-03-15%20at%2017-16-53%20Me%20Team%20Dashboard.png" width="1670" height="1060" /> | <img src="https://cdn.hackclub.com/019cf11b-ec86-78e7-bca9-a662abbce384/Screenshot%202026-03-15%20at%2017-17-08%20NetGoat.png" width="100%"  height="100%" /> |
+- No terminate (plaintext, pass-through, or Cloudflare in front)
+  → no fingerprint and no PoW. Same rule as [#113](https://github.com/netgoat-xyz/netgoat/issues/113).
+- Web Bot Auth registry is empty until operators seed a pinned https
+  allowlist.
+- HTTP/3 / QUIC clients will not appear in fingerprint v1.
+- Unsigned LLM browsers / `python` / `go-http-client` / curl take the
+  **PoW** lane — not a magic skip.
 
-## Features
+**Hardening next** (docs only; not this change)
 
-- **Anti-DDoS & WAF** — Filters like a hawk. Blocks malicious requests, bots, and common exploits.
-- **Rate Limiting & Request Queuing** — Your API won’t get nuked.
-- **Auto SSL & TLS Termination** — Free SSL with auto-renew.
-- **Load Balancing & Failover** — Multinode routing with zero-downtime.
-- **Real-Time Metrics Dashboard** — Monitor traffic, bandwidth, errors, and hits.
-- **Dynamic Rules Engine** — Write custom rules in JS/TS to handle routing, caching, filtering, etc.
-- **WebSocket & HTTP/2 Ready** — Handles modern protocols like a beast.
-- **Per-Domain Configs** — Define behavior per site with regex/wildcard support.
-- **Plugin System** — Extend NetGoat with custom plugins or middlewares.
-- **Cloudflare Zero Trust Support** — Acts as a trusted upstream in Zero Trust setups.
-- **Smart Caching Layer** — Custom cache policies per route, endpoint, or asset.
+- Keep CI race + vet on PRs and `main` as the verification baseline.
+- Leave alpha only when the written gate in
+  [docs/release.md](docs/release.md) is checked off. Beta does not
+  require Cloudflare parity, VSA, H3/QUIC fingerprint, default-on AI
+  classifiers, or a control-plane MVP.
 
-## Seamless intergration
+## Quick start
 
-- **DNS Searching** — Automatically scans your domains to automatically create a suitable Proxy record
-- **Cloudflare** — Manage cloudflare tunnels and more with our UI
-- **Bandwidth Limits** — Limit or throttle specific domains or proxy's
+Requirements:
 
-## 🏢 For Enterprise & Sponsors
-NetGoat is building the future of open-source edge networking. We are looking for infrastructure partners (Bare Metal, VPS providers, Security firms) to help us battle-test the engine.
+- Go 1.25 or newer
+- one or more reachable HTTP upstreams
 
-- **Strategic Partnerships:** Reach out via [Discord](https://discord.com/invite/3aJ7MdJsZV) or [Gmail](mailto:duckeydev@gmail.com)
-- **Financial Support:** [GitHub Sponsors](#) | [Open Collective](...)
+Clone the repository, add the routes you intend to expose to `config.yml`,
+then run:
 
-## Quick Start
+```sh
+go test ./...
+go run .
+```
 
-We recommend [datalix](https://datalix.eu/a/netgoat) for cheap and highly avaliable vps'ses
+The sample listener is `127.0.0.1:8080` (plaintext HTTP on loopback). A
+minimal local route looks like this:
 
-https://docs.netgoat.xyz (not published yet)
+```yaml
+listen: "127.0.0.1:8080"
+auth:
+  enabled: false
 
-## Open Source Projects That Helped me Build
+routes:
+  app.localhost:
+    type: domain
+    targets:
+      - url: http://127.0.0.1:3000
+        health_check: http
+```
 
-- [Bun](https://bun.sh) - [Github](https://github.com/oven-sh/bun) - MIT License
+Then send a request with the configured host:
 
-- [ShadCN](https://ui.shadcn.com) - [Github](https://github.com/shadcn-ui/ui) - MIT License
+```sh
+curl -H 'Host: app.localhost' http://127.0.0.1:8080/
+```
 
-- [NextJS](https://nextjs.org/) - [Github](https://github.com/vercel/next.js/) - MIT License
+A missing `config.yml` is fatal. Plaintext HTTP on a public address
+(`:8080`, `0.0.0.0`, `::`, or any non-loopback bind) is refused at startup
+unless `allow_insecure_public_http: true` is set. Enable TLS for public
+traffic. A route to a loopback or private-network target makes that target
+reachable through NetGoat, so keep a public listener behind TLS or enable
+authentication before adding such a route. The shipped `routes: {}` is
+intentionally empty: a fresh default deployment returns `404` for every Host
+instead of proxying to a local service.
 
-- [Fastify](https://fastify.dev) - [Github](https://github.com/fastify/fastify) - MIT License
+If the control plane is unavailable, NetGoat uses local routes and then the last valid recovery snapshot. Configure `api.url` as an empty string for a fully offline deployment.
 
-- [TailwindCSS](https://tailwindcss.com) - [Github](https://github.com/tailwindlabs/tailwindcss) - MIT License
+## Docker
 
-## Star History
+```sh
+docker build -t netgoat-agent .
+```
 
-<a href="https://www.star-history.com/#cloudable-dev/netgoat&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=cloudable-dev/netgoat&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=cloudable-dev/netgoat&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=cloudable-dev/netgoat&type=Date" />
- </picture>
-</a>
+The image is a distroless static runtime that runs as `nonroot`. It ships the
+repository's `config.yml` unchanged, which binds `127.0.0.1:8080` — inside a
+container that is only reachable from the container itself. Mount a config that
+listens on a container address before publishing a port:
+
+```yaml
+# config.container.yml
+listen: "0.0.0.0:8080"
+# Only behind a TLS-terminating proxy you control.
+allow_insecure_public_http: true
+routes: {}
+```
+
+```sh
+docker run --rm -p 8080:8080 \
+  -v "$PWD/config.container.yml:/app/config.yml:ro" \
+  -v netgoat-data:/app/database \
+  netgoat-agent
+```
+
+Mount `/app/database` so SQLite state, recovery snapshots, and ACME material
+survive a restart. The healthcheck is a TCP probe on port 8080 because the agent
+answers `404` for unconfigured hosts, so an HTTP status check would report a
+healthy server as failing. If your config moves the listener (`ssl.enabled`, a
+different `listen` address), point the probe at it:
+
+```sh
+docker run --rm -p 8443:8443 \
+  -e NETGOAT_HEALTHCHECK_PORT=8443 \
+  -v "$PWD/config.tls.yml:/app/config.yml:ro" \
+  -v netgoat-data:/app/database \
+  netgoat-agent
+```
+
+Published images: `ghcr.io/netgoat-xyz/netgoat`.
+
+The image does not include Python, so the optional `koda_waf`, `koda_2`, and
+`anomaly` inference workers are unavailable in the container. Run those features
+from a source checkout, or build a derived image that adds a Python runtime and
+the `ai/` directory.
+
+## Authentication bootstrap
+
+Fresh databases do not contain a default password. To enable local authentication, set both bootstrap variables before the first start:
+
+```sh
+export NETGOAT_BOOTSTRAP_USERNAME=admin
+export NETGOAT_BOOTSTRAP_PASSWORD='replace-with-at-least-12-characters'
+```
+
+Then set `auth.enabled: true`. Bootstrap credentials are used only when the user table is empty; existing users are not overwritten. Basic authentication does not create persistent cookie sessions.
+
+## Configuration highlights
+
+- `routes`: local fallback routes keyed by domain, wildcard/regex pattern, or path prefix; each route can override `policy.cache` and `policy.bandwidth`.
+- `api`: control-plane URL, key, poll interval, timeout, and maximum retry interval.
+- `health`: probe enablement, interval, timeout, and default path.
+- `cache`, `rate_limit`, `request_queue`, `bandwidth`: bounded global traffic defaults; cache and bandwidth can be overridden per route.
+- `metrics`: enables JSON at the configured path and Prometheus at `<path>.prom`.
+- `listen`: plaintext HTTP bind address when TLS is off; the sample uses loopback.
+- `allow_insecure_public_http`: explicit opt-in for plaintext HTTP on a public address.
+- `ssl`: static fallback TLS, per-domain certificate selection, and optional ACME issuance/renewal.
+- `bot_auth`: pinned https Web Bot Auth directory allowlist; empty pins fail open to session-bound PoW.
+- `dynamic_rules`: bounded administrator-managed TypeScript/JavaScript request decisions.
+- `plugins`: restart-only catalog selections for middleware compiled into this exact agent build; `sha256` is the release descriptor fingerprint, not a downloaded artifact hash.
+- `cloudflare`: optional Access JWT enforcement and explicit DNS/tunnel startup reconciliation. Reconciliation defaults to dry-run.
+- `telemetry`: disabled by default; endpoint, shared ingestion key, and heartbeat interval.
+- `anomaly`, `koda_waf`, `koda_2`: optional local inference workers.
+
+Secrets may also be supplied through the environment. `API_STREAM_KEY` overrides the YAML control-plane key, `NETGOAT_ACME_CACHE_KEY` encrypts ACME state, `CLOUDFLARE_API_TOKEN` is required for Cloudflare reconciliation, and `NETGOAT_CHALLENGE_SECRET` (or `DiamondKey`) binds PoW commitments. Do not commit `.env`, private keys, model files, databases, recovery snapshots, or telemetry identifiers.
+
+See the [operations guide](docs/operations.md) for production deploy, metrics scrape, policy precedence, ACME setup, and dynamic-rule safety boundaries; the [release train](docs/release.md) for `v*` tags and the alpha→beta gate; the [middleware SDK guide](docs/middleware-sdk.md) for trusted compiled-in extensions; and the [developer plugin catalog guide](docs/developer-plugins.md) for the restart-time selection and publisher trust boundary.
+
+## Architecture
+
+```text
+client -> NetGoat agent -> healthy upstream pool
+              |    |
+              |    +-> SQLite state + recovery snapshot
+              +------> stream-server (optional control plane)
+              +------> telemetry-server (optional, opt-in)
+```
+
+The agent's hot request path optionally verifies Cloudflare Access, applies authentication and traffic controls, resolves a route, evaluates dynamic rules, precompiled WAF rules, and any selected compiled middleware, optionally runs enabled local classifiers, and proxies the request. Health checks and control-plane polling run in bounded background workers.
+
+The optional `docker-compose.yml` starts only a loopback-bound development MongoDB for `stream-server`; the Go agent itself does not require it. Export `MONGO_INITDB_ROOT_USERNAME` and `MONGO_INITDB_ROOT_PASSWORD` before running Compose so development credentials stay outside the repository.
+
+## Development
+
+Run the full Go verification suite before submitting changes:
+
+```sh
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+Python worker syntax can be checked without installing their model dependencies:
+
+```sh
+python3 -m py_compile ai/*.py
+```
+
+See `CONTRIBUTING.md` for contribution conventions, `docs/release.md` for tagging and the alpha→beta gate, `docs/operations.md` for production deploy, and `SECURITY.md` for private vulnerability reporting.
+
+## Project links
+
+- Community: [Discord](https://discord.com/invite/3aJ7MdJsZV)
+- First donor: [Cozy Critters Society](https://opencollective.com/cozy-critters-society)
+- License: [AGPL-3.0](LICENSE)
+
+Special thanks to **Cozy Critters Society** and **Snow** for being NetGoat's first donors.

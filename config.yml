@@ -1,14 +1,115 @@
-debug_logs: true
-debug_overlay: true  # Show live AI analysis overlay on pages
+debug_logs: false
+debug_overlay: false  # Enable only while diagnosing HTML responses.
 honeypot: true
+# Only these direct proxy IPs/CIDRs may supply client forwarding headers.
+# trusted_proxies: ["127.0.0.1", "10.0.0.0/8"]
+trusted_proxies: []
+# Plaintext HTTP is bound to loopback so copying this file cannot become a
+# public unauthenticated reverse proxy. A non-loopback address without TLS
+# is refused unless allow_insecure_public_http is set.
+listen: "127.0.0.1:8080"
+allow_insecure_public_http: false
 auth:
+  enabled: false
+# Pinned Web Bot Auth skip lane. Empty pins fail open to session-bound PoW.
+# HMAC key: NETGOAT_CHALLENGE_SECRET or DiamondKey. If neither is set, an
+# ephemeral process key is used and the verified set is not kept across restarts.
+# pinned_directories must be https JWKS URLs; the agent never fetches an
+# unlisted Signature-Agent location.
+bot_auth:
   enabled: true
-  session_secret: "change-this-to-a-random-string"
+  pinned_directories: []  # e.g. ["https://example.invalid/.well-known/web-bot-auth"]
+  jwks_cache_seconds: 300
 ssl:
   enabled: false
   cert_file: "cert.pem"
   key_file: "key.pem"
   port: ":8443"
+  # Automatic issuance requires an explicit DNS allow-list, accepted CA terms,
+  # and NETGOAT_ACME_CACHE_KEY (a base64-encoded 32-byte key) in the environment.
+  acme:
+    enabled: false
+    accept_tos: false
+    email: ""
+    domains: []
+    cache_dir: "./database/acme"
+    # Set a staging directory URL before using a production ACME CA.
+    directory_url: ""
+    http_port: ":80"
+
+# Cloudflare integrations are opt-in. Cloudflare Access verifies every
+# incoming request before it reaches the agent's handlers and fails closed
+# when the assertion or key set cannot be verified.
+cloudflare:
+  access:
+    enabled: false
+    issuer: "" # e.g. "https://team-name.cloudflareaccess.com"
+    audience: [] # Cloudflare Access application audience tags
+    jwks_url: "" # Empty derives <issuer>/cdn-cgi/access/certs.
+    header: "Cf-Access-Jwt-Assertion"
+    cookie: "CF_Authorization"
+    jwks_cache_seconds: 300
+    clock_skew_seconds: 60
+    fetch_timeout_seconds: 10
+  # This makes a bounded, one-time set of DNS/tunnel API calls during startup.
+  # It never writes by default: set enabled: true and dry_run: false only after
+  # reviewing the operations. Supply the credential through CLOUDFLARE_API_TOKEN;
+  # there is intentionally no token field in this file.
+  reconciliation:
+    enabled: false
+    dry_run: true
+    account_id: "" # Required only for tunnels.
+    request_timeout_seconds: 15
+    dns_records: []
+    tunnels: []
+    # Example DNS creation (record_id turns this into an update):
+    # - zone_id: "0123456789abcdef0123456789abcdef"
+    #   record:
+    #     type: "A"
+    #     name: "app.example.com"
+    #     content: "203.0.113.10"
+    #     proxied: true
+    #     ttl: 1
+    # Example tunnel creation (set tunnel_id to update an existing tunnel):
+    # - tunnel:
+    #     name: "netgoat"
+    #     config_src: "cloudflare"
+    # Example tunnel update:
+    # - tunnel_id: "01234567-89ab-cdef-0123-456789abcdef"
+    #   tunnel:
+    #     name: "netgoat"
+    #     config_src: "cloudflare"
+
+# Ordered administrator-managed TypeScript/JavaScript request rules. The
+# runtime has no filesystem, network, process, or Go-object bindings and fails
+# closed on invalid source, oversized inputs, and execution timeouts.
+dynamic_rules:
+  enabled: false
+  max_execution_milliseconds: 25
+  rules: []
+  # Example:
+  # - name: block-private-admin
+  #   language: typescript
+  #   source: |
+  #     export function evaluate(request) {
+  #       return request.path === "/admin" && request.clientIP.startsWith("10.")
+  #         ? { action: "block", reason: "private admin path" } : null;
+  #     }
+
+# Catalog selections can activate only middleware compiled into this exact
+# agent binary. They never download or execute plugin source/artifacts, and a
+# stream update is staged until the next agent restart. `sha256` is the
+# immutable compiled descriptor fingerprint, not a marketplace manifest hash.
+plugins:
+  installations: []
+  # Reference descriptor shipped by this build (a harmless no-op):
+  # - plugin_id: "netgoat/noop"
+  #   factory_id: "builtin.noop"
+  #   version: "1.0.0"
+  #   sha256: "22d6f9898bf456265c2549c38ef185c11de1da1eeee944bb8e97470ed438d2c0"
+  #   api_version: "netgoat.dev/middleware/v1"
+  #   granted_capabilities: []
+  #   config: {}
 
 # Optional: custom error page served for 403/404/500
 custom_error_page: "public/error.html"
@@ -30,12 +131,38 @@ cache:
   max_entries: 1024
   max_body_bytes: 1048576
 
+# Per-client token-bucket rate limiting. Key can be ip, host, route, or global.
+rate_limit:
+  enabled: false
+  requests_per_minute: 120
+  burst: 60
+  key: "ip"
+
+# Bounded in-process request queue for backpressure during traffic spikes.
+request_queue:
+  enabled: false
+  max_concurrent: 256
+  max_queued: 512
+  timeout_seconds: 5
+
+# Upload/download throttling. Key can be ip, host, route, or global.
+bandwidth:
+  enabled: false
+  bytes_per_second: 1048576
+  burst_bytes: 1048576
+  key: "ip"
+
+# Runtime traffic counters. Prometheus format is also exposed at <path>.prom.
+metrics:
+  enabled: false
+  path: "/__netgoat/metrics"
+
 # External API connection for configuration streaming
 # The agent will automatically fall back to cached local configuration
 # if the API is unreachable or MongoDB is down
 api:
-  url: "http://localhost:8787"
-  key: "FuckYouImAAPIKey"
+  url: "" # Set to the companion stream-server URL to enable remote updates.
+  key: ""
   # Connection settings
   poll_interval: 5              # Seconds between snapshot polls
   connection_timeout: 10        # Seconds to wait for API responses
@@ -50,6 +177,26 @@ anomaly:
   python_script: "ai/model_server.py"
   feature_header: "X-GoatAI-Features"
 
+# Optional: Koda-Waf ML-enhanced WAF attack classification.
+# Model files are downloaded only when this detector is enabled.
+koda_waf:
+  enabled: false
+  threshold: 0.7
+  model_path: "ai/smart_waf_model.pkl"
+  scaler_path: "ai/model_features.pkl"
+  python_script: "ai/koda_waf_server.py"
+  feature_header: "X-KodaWaf-Features"
+
+# Optional: Koda-2 next-generation anomaly detection.
+# Model files are downloaded only when this detector is enabled.
+koda_2:
+  enabled: false
+  threshold: 0.7
+  model_path: "ai/koda2.keras"
+  scaler_path: "ai/koda2_scaler.pkl"
+  python_script: "ai/koda2_server.py"
+  feature_header: "X-Koda2-Features"
+
 # Fault Tolerance:
 # - Configuration snapshots are automatically persisted to ./database/config-snapshot.json
 # - On startup, the agent loads the last known good configuration from disk
@@ -57,3 +204,21 @@ anomaly:
 #   users with the cached configuration
 # - Connection attempts are retried with exponential backoff
 # - All route, WAF, and user configurations remain functional during outages
+
+# No upstream is reachable from the shipped configuration. Add routes only
+# after deciding how clients will authenticate and which networks may reach
+# the listen address. In particular, a route to 127.0.0.1 exposes that
+# loopback-only service to every client that can reach NetGoat.
+routes: {}
+health:
+  interval_seconds: 10
+  timeout_seconds: 3
+  path: "/"
+
+# Opt-in operational telemetry. Disabled by default. When enabled, this sends
+# host/runtime details and aggregate proxy counters to your telemetry-server.
+telemetry:
+  enabled: false
+  endpoint: "http://127.0.0.1:9091/api"
+  ingest_key: "" # Must match TELEMETRY_INGEST_KEY on telemetry-server.
+  interval_seconds: 300

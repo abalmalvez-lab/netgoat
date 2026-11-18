@@ -17,11 +17,45 @@ honeypot: true
 auth:
   enabled: true
   session_secret: "supersecret"
+bot_auth:
+  enabled: true
+  pinned_directories: ["https://example.invalid/.well-known/web-bot-auth"]
+  jwks_cache_seconds: 300
 ssl:
   enabled: true
   cert_file: "/path/to/cert.pem"
   key_file: "/path/to/key.pem"
   port: ":8443"
+  acme:
+    enabled: true
+    accept_tos: true
+    email: "ops@example.test"
+    domains: ["example.test", "api.example.test"]
+    cache_dir: "/var/lib/netgoat/acme"
+    directory_url: "https://acme-staging.example.test/directory"
+    http_port: ":8080"
+dynamic_rules:
+  enabled: true
+  max_rules: 8
+  max_execution_milliseconds: 20
+  rules:
+    - name: block-admin
+      language: typescript
+      source: "export function evaluate() { return { action: 'block' }; }"
+    - name: disabled-rule
+      language: javascript
+      enabled: false
+      source: "module.exports = () => null"
+plugins:
+  installations:
+    - plugin_id: "example.test/observe"
+      factory_id: "example.observe"
+      version: "1.0.0"
+      sha256: "9d3f13a7c6dd51d28839668413755ae4fe5e18c38ba5dec988676eca328ab3ca"
+      api_version: "netgoat.dev/middleware/v1"
+      granted_capabilities: ["request.read"]
+      config:
+        mode: "observe"
 custom_error_page: "/path/to/error.html"
 anomaly:
   enabled: true
@@ -30,6 +64,20 @@ anomaly:
   scaler_path: "ai/scaler.pkl"
   python_script: "ai/server.py"
   feature_header: "X-Features"
+koda_waf:
+  enabled: true
+  threshold: 0.82
+  model_path: "ai/smart_waf_model.pkl"
+  scaler_path: "ai/model_features.pkl"
+  python_script: "ai/koda_waf_server.py"
+  feature_header: "X-KodaWaf"
+koda_2:
+  enabled: true
+  threshold: 0.91
+  model_path: "ai/koda2.keras"
+  scaler_path: "ai/koda2_scaler.pkl"
+  python_script: "ai/koda2_server.py"
+  feature_header: "X-Koda2"
 error_pages:
   domain:
     example.com: "/path/to/example-error.html"
@@ -42,6 +90,24 @@ cache:
   ttl_seconds: 120
   max_entries: 2048
   max_body_bytes: 2097152
+rate_limit:
+  enabled: true
+  requests_per_minute: 300
+  burst: 80
+  key: "host"
+request_queue:
+  enabled: true
+  max_concurrent: 50
+  max_queued: 150
+  timeout_seconds: 3
+bandwidth:
+  enabled: true
+  bytes_per_second: 4096
+  burst_bytes: 8192
+  key: "route"
+metrics:
+  enabled: true
+  path: "/metrics"
 api:
   url: "https://api.example.com"
   key: "api_key_12345"
@@ -76,6 +142,16 @@ api:
 		t.Errorf("Auth.SessionSecret = %s, want supersecret", cfg.Auth.SessionSecret)
 	}
 
+	if !cfg.BotAuth.Enabled {
+		t.Error("BotAuth.Enabled should be true")
+	}
+	if len(cfg.BotAuth.PinnedDirectories) != 1 || cfg.BotAuth.PinnedDirectories[0] != "https://example.invalid/.well-known/web-bot-auth" {
+		t.Errorf("BotAuth.PinnedDirectories = %#v", cfg.BotAuth.PinnedDirectories)
+	}
+	if cfg.BotAuth.JWKSCacheSeconds != 300 {
+		t.Errorf("BotAuth.JWKSCacheSeconds = %d, want 300", cfg.BotAuth.JWKSCacheSeconds)
+	}
+
 	// Test SSL config
 	if !cfg.SSL.Enabled {
 		t.Error("SSL.Enabled should be true")
@@ -88,6 +164,19 @@ api:
 	}
 	if cfg.SSL.Port != ":8443" {
 		t.Errorf("SSL.Port = %s, want :8443", cfg.SSL.Port)
+	}
+	if !cfg.SSL.ACME.Enabled || !cfg.SSL.ACME.AcceptTOS || cfg.SSL.ACME.Email != "ops@example.test" ||
+		len(cfg.SSL.ACME.Domains) != 2 || cfg.SSL.ACME.CacheDir != "/var/lib/netgoat/acme" ||
+		cfg.SSL.ACME.DirectoryURL != "https://acme-staging.example.test/directory" || cfg.SSL.ACME.HTTPPort != ":8080" {
+		t.Errorf("SSL.ACME was not decoded: %+v", cfg.SSL.ACME)
+	}
+	if !cfg.DynamicRules.Enabled || cfg.DynamicRules.MaxRules != 8 || cfg.DynamicRules.MaxExecutionMilliseconds != 20 ||
+		len(cfg.DynamicRules.Rules) != 2 || !cfg.DynamicRules.Rules[0].IsEnabled() || cfg.DynamicRules.Rules[1].IsEnabled() {
+		t.Errorf("DynamicRules was not decoded: %+v", cfg.DynamicRules)
+	}
+	if len(cfg.Plugins.Installations) != 1 || cfg.Plugins.Installations[0].PluginID != "example.test/observe" ||
+		cfg.Plugins.Installations[0].Config["mode"] != "observe" {
+		t.Errorf("Plugins was not decoded: %+v", cfg.Plugins)
 	}
 
 	// Test custom error page
@@ -113,6 +202,44 @@ api:
 	}
 	if cfg.Anomaly.FeatureHeader != "X-Features" {
 		t.Errorf("Anomaly.FeatureHeader = %s, want X-Features", cfg.Anomaly.FeatureHeader)
+	}
+
+	if !cfg.KodaWaf.Enabled {
+		t.Error("KodaWaf.Enabled should be true")
+	}
+	if cfg.KodaWaf.Threshold != 0.82 {
+		t.Errorf("KodaWaf.Threshold = %f, want 0.82", cfg.KodaWaf.Threshold)
+	}
+	if cfg.KodaWaf.ModelPath != "ai/smart_waf_model.pkl" {
+		t.Errorf("KodaWaf.ModelPath = %s, want ai/smart_waf_model.pkl", cfg.KodaWaf.ModelPath)
+	}
+	if cfg.KodaWaf.ScalerPath != "ai/model_features.pkl" {
+		t.Errorf("KodaWaf.ScalerPath = %s, want ai/model_features.pkl", cfg.KodaWaf.ScalerPath)
+	}
+	if cfg.KodaWaf.PythonScript != "ai/koda_waf_server.py" {
+		t.Errorf("KodaWaf.PythonScript = %s, want ai/koda_waf_server.py", cfg.KodaWaf.PythonScript)
+	}
+	if cfg.KodaWaf.FeatureHeader != "X-KodaWaf" {
+		t.Errorf("KodaWaf.FeatureHeader = %s, want X-KodaWaf", cfg.KodaWaf.FeatureHeader)
+	}
+
+	if !cfg.Koda2.Enabled {
+		t.Error("Koda2.Enabled should be true")
+	}
+	if cfg.Koda2.Threshold != 0.91 {
+		t.Errorf("Koda2.Threshold = %f, want 0.91", cfg.Koda2.Threshold)
+	}
+	if cfg.Koda2.ModelPath != "ai/koda2.keras" {
+		t.Errorf("Koda2.ModelPath = %s, want ai/koda2.keras", cfg.Koda2.ModelPath)
+	}
+	if cfg.Koda2.ScalerPath != "ai/koda2_scaler.pkl" {
+		t.Errorf("Koda2.ScalerPath = %s, want ai/koda2_scaler.pkl", cfg.Koda2.ScalerPath)
+	}
+	if cfg.Koda2.PythonScript != "ai/koda2_server.py" {
+		t.Errorf("Koda2.PythonScript = %s, want ai/koda2_server.py", cfg.Koda2.PythonScript)
+	}
+	if cfg.Koda2.FeatureHeader != "X-Koda2" {
+		t.Errorf("Koda2.FeatureHeader = %s, want X-Koda2", cfg.Koda2.FeatureHeader)
 	}
 
 	// Test error pages config
@@ -148,6 +275,52 @@ api:
 	}
 	if cfg.Cache.MaxBodyBytes != 2097152 {
 		t.Errorf("Cache.MaxBodyBytes = %d, want 2097152", cfg.Cache.MaxBodyBytes)
+	}
+
+	if !cfg.RateLimit.Enabled {
+		t.Error("RateLimit.Enabled should be true")
+	}
+	if cfg.RateLimit.RequestsPerMinute != 300 {
+		t.Errorf("RateLimit.RequestsPerMinute = %d, want 300", cfg.RateLimit.RequestsPerMinute)
+	}
+	if cfg.RateLimit.Burst != 80 {
+		t.Errorf("RateLimit.Burst = %d, want 80", cfg.RateLimit.Burst)
+	}
+	if cfg.RateLimit.Key != "host" {
+		t.Errorf("RateLimit.Key = %s, want host", cfg.RateLimit.Key)
+	}
+
+	if !cfg.RequestQueue.Enabled {
+		t.Error("RequestQueue.Enabled should be true")
+	}
+	if cfg.RequestQueue.MaxConcurrent != 50 {
+		t.Errorf("RequestQueue.MaxConcurrent = %d, want 50", cfg.RequestQueue.MaxConcurrent)
+	}
+	if cfg.RequestQueue.MaxQueued != 150 {
+		t.Errorf("RequestQueue.MaxQueued = %d, want 150", cfg.RequestQueue.MaxQueued)
+	}
+	if cfg.RequestQueue.TimeoutSeconds != 3 {
+		t.Errorf("RequestQueue.TimeoutSeconds = %d, want 3", cfg.RequestQueue.TimeoutSeconds)
+	}
+
+	if !cfg.Bandwidth.Enabled {
+		t.Error("Bandwidth.Enabled should be true")
+	}
+	if cfg.Bandwidth.BytesPerSecond != 4096 {
+		t.Errorf("Bandwidth.BytesPerSecond = %d, want 4096", cfg.Bandwidth.BytesPerSecond)
+	}
+	if cfg.Bandwidth.BurstBytes != 8192 {
+		t.Errorf("Bandwidth.BurstBytes = %d, want 8192", cfg.Bandwidth.BurstBytes)
+	}
+	if cfg.Bandwidth.Key != "route" {
+		t.Errorf("Bandwidth.Key = %s, want route", cfg.Bandwidth.Key)
+	}
+
+	if !cfg.Metrics.Enabled {
+		t.Error("Metrics.Enabled should be true")
+	}
+	if cfg.Metrics.Path != "/metrics" {
+		t.Errorf("Metrics.Path = %s, want /metrics", cfg.Metrics.Path)
 	}
 
 	// Test API config
@@ -408,6 +581,28 @@ api:
 	}
 }
 
+func TestLoadParsesListenAndInsecureFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yml")
+	configContent := `
+listen: "127.0.0.1:8080"
+allow_insecure_public_http: true
+`
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+	cfg, err := Load(configFile)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Listen != "127.0.0.1:8080" {
+		t.Fatalf("Listen = %q", cfg.Listen)
+	}
+	if !cfg.AllowInsecurePublicHTTP {
+		t.Fatal("AllowInsecurePublicHTTP should be true")
+	}
+}
+
 func TestConfigStruct(t *testing.T) {
 	cfg := &Config{}
 
@@ -425,6 +620,12 @@ func TestConfigStruct(t *testing.T) {
 	}
 	if cfg.SSL.Enabled {
 		t.Error("SSL.Enabled should default to false")
+	}
+	if cfg.AllowInsecurePublicHTTP {
+		t.Error("AllowInsecurePublicHTTP should default to false")
+	}
+	if cfg.Listen != "" {
+		t.Error("Listen should default to empty")
 	}
 }
 
@@ -458,5 +659,79 @@ custom_error_page: "/path/with spaces/error.html"
 	}
 	if cfg.CustomErrorPage != "/path/with spaces/error.html" {
 		t.Errorf("CustomErrorPage not preserved correctly")
+	}
+}
+
+func TestLoadParsesLocalRoutes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	data := []byte(`routes:
+  api.example.test:
+    type: domain
+    targets:
+      - url: http://127.0.0.1:9001/base
+        health_check: http
+      - url: http://127.0.0.1:9002
+        health_check: tcp
+    policy:
+      cache:
+        enabled: true
+        ttl_seconds: 45
+      bandwidth:
+        bytes_per_second: 4096
+        burst_bytes: 8192
+        key: ip
+  /internal/:
+    type: path
+    target: http://127.0.0.1:9010
+    active: false
+`)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	route, ok := cfg.Routes["api.example.test"]
+	if !ok || len(route.Targets) != 2 || route.Targets[1].HealthCheck != "tcp" || !route.IsActive() {
+		t.Fatalf("domain route was not decoded: %+v", route)
+	}
+	if route.Policy.Cache == nil || route.Policy.Cache.Enabled == nil || !*route.Policy.Cache.Enabled ||
+		route.Policy.Cache.TTLSeconds == nil || *route.Policy.Cache.TTLSeconds != 45 {
+		t.Fatalf("cache policy was not decoded: %+v", route.Policy)
+	}
+	if route.Policy.Bandwidth == nil || route.Policy.Bandwidth.BytesPerSecond == nil || *route.Policy.Bandwidth.BytesPerSecond != 4096 {
+		t.Fatalf("bandwidth policy was not decoded: %+v", route.Policy)
+	}
+	if cfg.Routes["/internal/"].IsActive() {
+		t.Fatal("explicitly inactive route should remain inactive")
+	}
+}
+
+func TestDatabasePathsUseConfiguredValues(t *testing.T) {
+	cfg := &Config{}
+	if got := cfg.DatabasePath(); got != "./database/proxy.db" {
+		t.Fatalf("default database path = %q", got)
+	}
+	if got := cfg.DatabaseStandbyPath(); got != "./database/proxy.standby.db" {
+		t.Fatalf("default standby path = %q", got)
+	}
+
+	cfg.Database.Path = filepath.Join("custom", "agent.db")
+	if got := cfg.DatabaseStandbyPath(); got != filepath.Join("custom", "agent.standby.db") {
+		t.Fatalf("derived standby path = %q", got)
+	}
+	cfg.Database.StandbyPath = filepath.Join("backup", "agent.db")
+	cfg.Database.BackupIntervalSeconds = 30
+	if got := cfg.DatabasePath(); got != filepath.Join("custom", "agent.db") {
+		t.Fatalf("configured database path = %q", got)
+	}
+	if got := cfg.DatabaseStandbyPath(); got != filepath.Join("backup", "agent.db") {
+		t.Fatalf("configured standby path = %q", got)
+	}
+	if got := cfg.DatabaseBackupIntervalSeconds(); got != 30 {
+		t.Fatalf("backup interval = %d", got)
 	}
 }
